@@ -2,9 +2,9 @@
   "endpoint": "https://testnet-api.geobrowser.io",
   "spaces": [
     {
-      "name": "Root",
+      "name": "Geo",
       "id": "a19c345ab9866679b001d7d2138d88a1",
-      "description": "Root space"
+      "description": "Geo space"
     },
     {
       "name": "AI",
@@ -20,6 +20,31 @@
       "name": "Health",
       "id": "52c7ae149838b6d47ce0f3b2a5974546",
       "description": "Health space"
-    }
+    },
+    {
+      "name": "Industries",
+      "id": "d69608290513c2a91102c939b3265bd7",
+      "description": "Industries space"
+    },
+    {
+      "name": "Technology",
+      "id": "870e3b3068661e6280fad2ab456829bc",
+      "description": "Technology space"
+    },
+    {
+      "name": "Software",
+      "id": "9b611b848b12491b9b6b43f3cf019b8b",
+      "description": "Software space"
+    },
+    {
+      "name": "Geo Education",
+      "id": "720eb279c64d56735dccd17a2a416ba2",
+      "description": "Geo Education space"
+    },
+    {
+      "name": "Healthcare",
+      "id": "5d3e53b46f2dd38caa231ccc763212f5",
+      "description": "Healthcare space"
+    },
   ]
 }
