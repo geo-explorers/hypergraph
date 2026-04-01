@@ -21,7 +21,7 @@ export type PrefetchedSpace = {
   entities: PrefetchedEntity[];
 };
 
-const PAGE_SIZE = 10000;
+const PAGE_SIZE = 1000;
 
 const fetchAllEntities = async (endpoint: string, spaceId: string): Promise<PrefetchedEntity[]> => {
   const all: PrefetchedEntity[] = [];
