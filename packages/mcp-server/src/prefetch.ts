@@ -98,12 +98,12 @@ export const prefetchAll = (config: SpacesConfig): Effect.Effect<PrefetchedSpace
   Effect.forEach(config.spaces, (space) => prefetchSpace(space.id, space.name, config.endpoint), {
     concurrency: 'unbounded',
   }).pipe(
-    Effect.timeout(Duration.minutes(2)),
+    Effect.timeout(Duration.minutes(5)),
     Effect.catchTag('TimeoutException', () =>
       Effect.fail(
         new PrefetchError({
           space: 'all',
-          cause: 'Prefetch exceeded 2-minute timeout',
+          cause: 'Prefetch exceeded 5-minute timeout',
         }),
       ),
     ),
