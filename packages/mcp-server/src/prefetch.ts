@@ -1,17 +1,17 @@
 import { Duration, Effect } from 'effect';
 import type { SpacesConfig } from './config.js';
 import { PrefetchError } from './errors.js';
-import type { EntitiesResult, PropertiesResult, TypesListResult } from './graphql-client.js';
-import { fetchEntities, fetchProperties, fetchTypes } from './graphql-client.js';
+import type { EntityNode, PropertyNode, TypesListResult } from './graphql-client.js';
+import { fetchEntitiesPage, fetchPropertiesPage, fetchTypes } from './graphql-client.js';
 
 export type PrefetchedType = {
   id: string;
   name: string | null;
 };
 
-export type PrefetchedProperty = PropertiesResult['properties'][number];
+export type PrefetchedProperty = PropertyNode;
 
-export type PrefetchedEntity = EntitiesResult['entities'][number];
+export type PrefetchedEntity = EntityNode;
 
 export type PrefetchedSpace = {
   spaceName: string;
@@ -25,17 +25,19 @@ const PAGE_SIZE = 1000;
 
 const fetchAllEntities = async (endpoint: string, spaceId: string): Promise<PrefetchedEntity[]> => {
   const all: PrefetchedEntity[] = [];
-  let offset = 0;
+  let after: string | null = null;
 
   while (true) {
-    const page = await fetchEntities(endpoint, spaceId, PAGE_SIZE, offset);
-    all.push(...page);
+    const page = await fetchEntitiesPage(endpoint, spaceId, PAGE_SIZE, after);
+    for (const edge of page.edges) {
+      all.push(edge.node);
+    }
 
-    if (page.length < PAGE_SIZE) {
+    if (!page.pageInfo.hasNextPage) {
       break;
     }
 
-    offset += PAGE_SIZE;
+    after = page.pageInfo.endCursor;
   }
 
   return all;
@@ -43,17 +45,19 @@ const fetchAllEntities = async (endpoint: string, spaceId: string): Promise<Pref
 
 const fetchAllProperties = async (endpoint: string, spaceId: string): Promise<PrefetchedProperty[]> => {
   const all: PrefetchedProperty[] = [];
-  let offset = 0;
+  let after: string | null = null;
 
   while (true) {
-    const page = await fetchProperties(endpoint, spaceId, PAGE_SIZE, offset);
-    all.push(...page);
+    const page = await fetchPropertiesPage(endpoint, spaceId, PAGE_SIZE, after);
+    for (const edge of page.edges) {
+      all.push(edge.node);
+    }
 
-    if (page.length < PAGE_SIZE) {
+    if (!page.pageInfo.hasNextPage) {
       break;
     }
 
-    offset += PAGE_SIZE;
+    after = page.pageInfo.endCursor;
   }
 
   return all;

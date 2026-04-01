@@ -9,36 +9,52 @@ export const TYPES_LIST_QUERY = /* GraphQL */ `
   }
 `;
 
-export const PROPERTIES_QUERY = /* GraphQL */ `
-  query Properties($spaceId: UUID!, $first: Int, $offset: Int) {
-    properties(spaceId: $spaceId, first: $first, offset: $offset) {
-      id
-      name
-      dataTypeName
+export const PROPERTIES_CONNECTION_QUERY = /* GraphQL */ `
+  query PropertiesConnection($spaceId: UUID!, $first: Int, $after: Cursor) {
+    propertiesConnection(spaceId: $spaceId, first: $first, after: $after) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      edges {
+        node {
+          id
+          name
+          dataTypeName
+        }
+      }
     }
   }
 `;
 
-export const ENTITIES_QUERY = /* GraphQL */ `
-  query PrefetchEntities($spaceId: UUID!, $first: Int, $offset: Int) {
-    entities(spaceId: $spaceId, first: $first, offset: $offset) {
-      id
-      name
-      typeIds
-      valuesList(filter: { spaceId: { is: $spaceId } }) {
-        propertyId
-        text
-        boolean
-        float
-        datetime
-        point
-        schedule
+export const ENTITIES_CONNECTION_QUERY = /* GraphQL */ `
+  query EntitiesConnection($spaceId: UUID!, $first: Int, $after: Cursor) {
+    entitiesConnection(spaceId: $spaceId, first: $first, after: $after) {
+      pageInfo {
+        hasNextPage
+        endCursor
       }
-      relationsList(filter: { spaceId: { is: $spaceId } }) {
-        typeId
-        toEntity {
+      edges {
+        node {
           id
           name
+          typeIds
+          valuesList(filter: { spaceId: { is: $spaceId } }) {
+            propertyId
+            text
+            boolean
+            float
+            datetime
+            point
+            schedule
+          }
+          relationsList(filter: { spaceId: { is: $spaceId } }) {
+            typeId
+            toEntity {
+              id
+              name
+            }
+          }
         }
       }
     }
@@ -52,36 +68,55 @@ export type TypesListResult = {
   }> | null;
 };
 
-export type PropertiesResult = {
-  properties: Array<{
-    id: string;
-    name: string | null;
-    dataTypeName: string | null;
+export type PropertyNode = {
+  id: string;
+  name: string | null;
+  dataTypeName: string | null;
+};
+
+export type PropertiesConnectionResult = {
+  propertiesConnection: {
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    edges: Array<{ node: PropertyNode }>;
+  };
+};
+
+export type EntityNode = {
+  id: string;
+  name: string | null;
+  typeIds: string[];
+  valuesList: Array<{
+    propertyId: string;
+    text: string | null;
+    boolean: boolean | null;
+    float: number | null;
+    datetime: string | null;
+    point: unknown | null;
+    schedule: unknown | null;
+  }>;
+  relationsList: Array<{
+    typeId: string;
+    toEntity: {
+      id: string;
+      name: string | null;
+    };
   }>;
 };
 
+export type EntitiesConnectionResult = {
+  entitiesConnection: {
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    edges: Array<{ node: EntityNode }>;
+  };
+};
+
+// Keep old types for backward compat with store.ts
+export type PropertiesResult = {
+  properties: PropertyNode[];
+};
+
 export type EntitiesResult = {
-  entities: Array<{
-    id: string;
-    name: string | null;
-    typeIds: string[];
-    valuesList: Array<{
-      propertyId: string;
-      text: string | null;
-      boolean: boolean | null;
-      float: number | null;
-      datetime: string | null;
-      point: unknown | null;
-      schedule: unknown | null;
-    }>;
-    relationsList: Array<{
-      typeId: string;
-      toEntity: {
-        id: string;
-        name: string | null;
-      };
-    }>;
-  }>;
+  entities: EntityNode[];
 };
 
 export const fetchTypes = async (endpoint: string, spaceId: string): Promise<TypesListResult['typesList']> => {
@@ -92,30 +127,30 @@ export const fetchTypes = async (endpoint: string, spaceId: string): Promise<Typ
   return result.typesList ?? [];
 };
 
-export const fetchProperties = async (
+export const fetchPropertiesPage = async (
   endpoint: string,
   spaceId: string,
   first: number,
-  offset: number,
-): Promise<PropertiesResult['properties']> => {
-  const result = await request<PropertiesResult>(`${endpoint}/graphql`, PROPERTIES_QUERY, {
+  after: string | null,
+): Promise<PropertiesConnectionResult['propertiesConnection']> => {
+  const result = await request<PropertiesConnectionResult>(`${endpoint}/graphql`, PROPERTIES_CONNECTION_QUERY, {
     spaceId,
     first,
-    offset,
+    after,
   });
-  return result.properties;
+  return result.propertiesConnection;
 };
 
-export const fetchEntities = async (
+export const fetchEntitiesPage = async (
   endpoint: string,
   spaceId: string,
   first: number,
-  offset: number,
-): Promise<EntitiesResult['entities']> => {
-  const result = await request<EntitiesResult>(`${endpoint}/graphql`, ENTITIES_QUERY, {
+  after: string | null,
+): Promise<EntitiesConnectionResult['entitiesConnection']> => {
+  const result = await request<EntitiesConnectionResult>(`${endpoint}/graphql`, ENTITIES_CONNECTION_QUERY, {
     spaceId,
     first,
-    offset,
+    after,
   });
-  return result.entities;
+  return result.entitiesConnection;
 };
