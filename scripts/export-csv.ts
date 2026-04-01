@@ -14,7 +14,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const ENDPOINT = 'https://testnet-api.geobrowser.io/graphql';
-const PAGE_SIZE = 10_000;
+const PAGE_SIZE = 1_000;
 
 // ---------------------------------------------------------------------------
 // GraphQL queries (copied from packages/mcp-server/src/graphql-client.ts)
@@ -29,38 +29,51 @@ const TYPES_LIST_QUERY = /* GraphQL */ `
   }
 `;
 
-const PROPERTIES_QUERY = /* GraphQL */ `
-  query Properties($spaceId: UUID!, $first: Int, $offset: Int) {
-    properties(spaceId: $spaceId, first: $first, offset: $offset) {
-      id
-      name
-      dataTypeName
+const PROPERTIES_CONNECTION_QUERY = /* GraphQL */ `
+  query PropertiesConnection($spaceId: UUID!, $first: Int, $after: Cursor) {
+    propertiesConnection(spaceId: $spaceId, first: $first, after: $after) {
+      nodes {
+        id
+        name
+        dataTypeName
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
     }
   }
 `;
 
-const ENTITIES_QUERY = /* GraphQL */ `
-  query PrefetchEntities($spaceId: UUID!, $first: Int, $offset: Int) {
-    entities(spaceId: $spaceId, first: $first, offset: $offset) {
-      id
-      name
-      typeIds
-      valuesList(filter: { spaceId: { is: $spaceId } }) {
-        propertyId
-        text
-        boolean
-        float
-        datetime
-        point
-        schedule
-      }
-      relationsList(filter: { spaceId: { is: $spaceId } }) {
-        typeId
-        toEntity {
-          id
-          name
+const ENTITIES_CONNECTION_QUERY = /* GraphQL */ `
+  query EntitiesConnection($spaceId: UUID!, $first: Int, $after: Cursor) {
+    entitiesConnection(spaceId: $spaceId, first: $first, after: $after) {
+      nodes {
+        id
+        name
+        typeIds
+        valuesList(filter: { spaceId: { is: $spaceId } }) {
+          propertyId
+          text
+          boolean
+          float
+          datetime
+          point
+          schedule
+        }
+        relationsList(filter: { spaceId: { is: $spaceId } }) {
+          typeId
+          toEntity {
+            id
+            name
+          }
         }
       }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      totalCount
     }
   }
 `;
@@ -99,7 +112,10 @@ async function gql<T>(query: string, variables: Record<string, unknown>): Promis
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, variables }),
   });
-  if (!res.ok) throw new Error(`GraphQL request failed: ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`GraphQL request failed: ${res.status} ${res.statusText}\n${body}`);
+  }
   const json = (await res.json()) as { data: T; errors?: unknown[] };
   if (json.errors) throw new Error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
   return json.data;
@@ -116,32 +132,45 @@ async function fetchTypes(spaceId: string): Promise<GqlType[]> {
 
 async function fetchAllProperties(spaceId: string): Promise<GqlProperty[]> {
   const all: GqlProperty[] = [];
-  let offset = 0;
+  let after: string | null = null;
   while (true) {
-    const data = await gql<{ properties: GqlProperty[] }>(PROPERTIES_QUERY, {
-      spaceId,
-      first: PAGE_SIZE,
-      offset,
-    });
-    all.push(...data.properties);
-    if (data.properties.length < PAGE_SIZE) break;
-    offset += PAGE_SIZE;
+    const vars: Record<string, unknown> = { spaceId, first: PAGE_SIZE };
+    if (after) vars.after = after;
+    const data = await gql<{
+      propertiesConnection: {
+        nodes: GqlProperty[];
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      };
+    }>(PROPERTIES_CONNECTION_QUERY, vars);
+    all.push(...data.propertiesConnection.nodes);
+    if (!data.propertiesConnection.pageInfo.hasNextPage) break;
+    after = data.propertiesConnection.pageInfo.endCursor;
   }
   return all;
 }
 
 async function fetchAllEntities(spaceId: string): Promise<GqlEntity[]> {
   const all: GqlEntity[] = [];
-  let offset = 0;
+  let after: string | null = null;
+  let total: number | undefined;
   while (true) {
-    const data = await gql<{ entities: GqlEntity[] }>(ENTITIES_QUERY, {
-      spaceId,
-      first: PAGE_SIZE,
-      offset,
-    });
-    all.push(...data.entities);
-    if (data.entities.length < PAGE_SIZE) break;
-    offset += PAGE_SIZE;
+    const vars: Record<string, unknown> = { spaceId, first: PAGE_SIZE };
+    if (after) vars.after = after;
+    const data = await gql<{
+      entitiesConnection: {
+        nodes: GqlEntity[];
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        totalCount: number;
+      };
+    }>(ENTITIES_CONNECTION_QUERY, vars);
+    all.push(...data.entitiesConnection.nodes);
+    if (total === undefined) {
+      total = data.entitiesConnection.totalCount;
+      console.log(`    Entities total: ${total}`);
+    }
+    console.log(`    Fetched ${all.length}/${total} entities...`);
+    if (!data.entitiesConnection.pageInfo.hasNextPage) break;
+    after = data.entitiesConnection.pageInfo.endCursor;
   }
   return all;
 }
