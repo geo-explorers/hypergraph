@@ -1,9 +1,12 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import type { SpacesConfig } from '../config.js';
+import type { RelatedEntityInfo } from '../formatters/entities.js';
 import { formatRelatedEntityList, formatRelatedEntityListCompact } from '../formatters/entities.js';
-import type { PrefetchedStore } from '../store.js';
+import { resolveTypes } from '../fuzzy.js';
+import { fetchEntities, fetchEntity, fetchNameMaps } from '../graphql-client.js';
 
-export const registerGetRelatedEntitiesTool = (server: McpServer, store: PrefetchedStore): void => {
+export const registerGetRelatedEntitiesTool = (server: McpServer, config: SpacesConfig): void => {
   server.registerTool(
     'get_related_entities',
     {
@@ -21,7 +24,7 @@ export const registerGetRelatedEntitiesTool = (server: McpServer, store: Prefetc
           .optional()
           .default('both')
           .describe(
-            'Traversal direction: "outgoing" (entity → targets), "incoming" (sources → entity), or "both" (default)',
+            'Traversal direction: "outgoing" (entity -> targets), "incoming" (sources -> entity), or "both" (default)',
           ),
         limit: z.number().optional().describe('Optional: max results (default: 50). Use offset for pagination.'),
         offset: z.number().optional().describe('Optional: number of results to skip (for pagination)'),
@@ -29,7 +32,7 @@ export const registerGetRelatedEntitiesTool = (server: McpServer, store: Prefetc
           .boolean()
           .optional()
           .describe(
-            'Optional: return results as a compact table (Name, Type, Space, ID) instead of full entity cards. Recommended for large result sets when you only need to identify entities before fetching details with get_entity.',
+            'Optional: return results as a compact table instead of full entity cards. Recommended for large result sets.',
           ),
       },
       annotations: {
@@ -40,93 +43,160 @@ export const registerGetRelatedEntitiesTool = (server: McpServer, store: Prefetc
     },
     async ({ entity_id, relation_type, direction, limit, offset, compact }) => {
       const DEFAULT_LIMIT = 50;
-      const entity = store.getEntity(entity_id);
 
-      if (!entity) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Entity "${entity_id}" not found. Provide a valid entity ID from search results.`,
-            },
-          ],
-          isError: true,
-        };
-      }
+      try {
+        const allSpaceIds = config.spaces.map((s) => s.id);
 
-      let relationTypeIds: string[] | undefined;
-      let relationTypeName: string | undefined;
+        // Fetch the source entity and name maps in parallel
+        const [entity, names] = await Promise.all([
+          fetchEntity(config.endpoint, entity_id),
+          fetchNameMaps(config.endpoint, allSpaceIds),
+        ]);
 
-      if (relation_type) {
-        relationTypeIds = store.resolveRelationTypeIds(relation_type);
-
-        if (relationTypeIds.length === 0) {
+        if (!entity) {
           return {
             content: [
               {
                 type: 'text' as const,
-                text: `Relation type "${relation_type}" not found in property registry. Try a different name.`,
+                text: `Entity "${entity_id}" not found. Provide a valid entity ID from search results.`,
               },
             ],
             isError: true,
           };
         }
 
-        relationTypeName = store.resolvePropertyName(relationTypeIds[0]);
-      }
+        const dir = direction ?? 'both';
+        const results: RelatedEntityInfo[] = [];
 
-      const dir = direction ?? 'both';
-      const fullResults = store.getRelatedEntities(entity_id, dir, relationTypeIds);
+        // Outgoing: relations FROM this entity TO targets
+        if (dir === 'outgoing' || dir === 'both') {
+          for (const rel of entity.relationsList) {
+            const relTypeName = names.propertyNames.get(rel.typeId) ?? rel.typeId;
 
-      const start = offset ?? 0;
-      const effectiveLimit = limit ?? DEFAULT_LIMIT;
-      const sliced = fullResults.slice(start, start + effectiveLimit);
+            // Filter by relation type name if specified
+            if (relation_type) {
+              const matched = resolveTypes(relation_type, [{ id: rel.typeId, name: relTypeName }]);
+              if (matched.length === 0) continue;
+            }
 
-      if (sliced.length === 0) {
-        const entityName = entity.name ?? entity_id;
+            // Fetch the target entity for full details
+            const targetEntity = await fetchEntity(config.endpoint, rel.toEntity.id);
+            if (targetEntity) {
+              results.push({
+                entity: targetEntity,
+                relationTypeName: relTypeName,
+                direction: 'outgoing',
+              });
+            }
+          }
+        }
 
-        if (relation_type) {
-          const allRelated = store.getRelatedEntities(entity_id, dir, undefined);
-          const availableTypes = [
-            ...new Set(allRelated.map((r) => store.resolvePropertyName(r.relationTypeId))),
-          ].sort();
-          const hint =
-            availableTypes.length > 0
-              ? `\nAvailable relation types on "${entityName}": ${availableTypes.join(', ')}`
-              : '';
+        // Incoming: entities that have relations pointing TO this entity
+        if (dir === 'incoming' || dir === 'both') {
+          // Use relations filter to find entities with relations pointing to this entity
+          const filter: Record<string, unknown> = {
+            relations: {
+              some: {
+                toEntityId: { is: entity_id },
+              },
+            },
+          };
+
+          // Query each space in parallel for incoming entities
+          const spaceResults = await Promise.all(
+            allSpaceIds.map((sid) =>
+              fetchEntities(config.endpoint, {
+                spaceId: sid,
+                filter,
+                first: 200,
+              }),
+            ),
+          );
+          const incomingEntities = spaceResults.flat();
+
+          for (const incoming of incomingEntities) {
+            // Find matching relations from this entity to the source
+            for (const rel of incoming.relationsList) {
+              if (rel.toEntity.id !== entity_id) continue;
+
+              const relTypeName = names.propertyNames.get(rel.typeId) ?? rel.typeId;
+
+              if (relation_type) {
+                const matched = resolveTypes(relation_type, [{ id: rel.typeId, name: relTypeName }]);
+                if (matched.length === 0) continue;
+              }
+
+              results.push({
+                entity: incoming,
+                relationTypeName: relTypeName,
+                direction: 'incoming',
+              });
+              break; // Only add this entity once
+            }
+          }
+        }
+
+        const start = offset ?? 0;
+        const effectiveLimit = limit ?? DEFAULT_LIMIT;
+        const sliced = results.slice(start, start + effectiveLimit);
+
+        if (sliced.length === 0) {
+          const entityName = entity.name ?? entity_id;
+
+          if (relation_type) {
+            // Show available relation types
+            const allRelTypes = entity.relationsList.map((r) => names.propertyNames.get(r.typeId) ?? r.typeId);
+            const uniqueTypes = [...new Set(allRelTypes)].sort();
+            const hint =
+              uniqueTypes.length > 0
+                ? `\nAvailable outgoing relation types on "${entityName}": ${uniqueTypes.join(', ')}`
+                : '';
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `No ${dir === 'both' ? '' : `${dir} `}related entities found for "${entityName}" with relation type "${relation_type}".${hint}`,
+                },
+              ],
+            };
+          }
+
           return {
             content: [
               {
                 type: 'text' as const,
-                text: `No ${dir === 'both' ? '' : `${dir} `}related entities found for "${entityName}" with relation type "${relation_type}".${hint}`,
+                text: `No ${dir === 'both' ? '' : `${dir} `}related entities found for "${entityName}".`,
               },
             ],
           };
         }
 
+        const formatOptions = {
+          sourceEntityName: entity.name ?? entity_id,
+          direction: dir,
+          ...(relation_type !== undefined && { relationTypeName: relation_type }),
+          total: results.length,
+          limit: effectiveLimit,
+          ...(offset !== undefined && { offset }),
+          names,
+        };
+
+        const text = compact
+          ? formatRelatedEntityListCompact(sliced, formatOptions)
+          : formatRelatedEntityList(sliced, formatOptions);
+
+        return { content: [{ type: 'text' as const, text }] };
+      } catch (error) {
         return {
           content: [
             {
               type: 'text' as const,
-              text: `No ${dir === 'both' ? '' : `${dir} `}related entities found for "${entityName}".`,
+              text: `Failed to get related entities: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
+          isError: true,
         };
       }
-
-      const formatOptions = {
-        sourceEntityName: entity.name ?? entity_id,
-        direction: dir,
-        ...(relationTypeName !== undefined && { relationTypeName }),
-        total: fullResults.length,
-        limit: effectiveLimit,
-        ...(offset !== undefined && { offset }),
-      };
-      const text = compact
-        ? formatRelatedEntityListCompact(sliced, store, formatOptions)
-        : formatRelatedEntityList(sliced, store, formatOptions);
-
-      return { content: [{ type: 'text' as const, text }] };
     },
   );
 };

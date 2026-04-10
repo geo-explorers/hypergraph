@@ -1,8 +1,8 @@
-import type { PrefetchedStore, RelatedEntity, StoredEntity } from '../store.js';
+import type { GeoEntity, NameMaps } from '../graphql-client.js';
 
-type StoredValue = StoredEntity['values'][number];
+type GeoValue = GeoEntity['valuesList'][number];
 
-export const extractPropertyValue = (value: StoredValue): string | null => {
+export const extractPropertyValue = (value: GeoValue): string | null => {
   if (value.text !== null && value.text !== undefined) return value.text;
   if (value.float !== null && value.float !== undefined) return String(value.float);
   if (value.boolean !== null && value.boolean !== undefined) return String(value.boolean);
@@ -20,87 +20,88 @@ const truncateValue = (value: string): string => {
   return `${value.slice(0, TRUNCATION_LIMIT)}... (truncated, ${total.toLocaleString()} chars total)`;
 };
 
+const buildGeoUrl = (spaceId: string, entityId: string): string =>
+  `https://www.geobrowser.io/space/${spaceId}/${entityId}`;
+
+const resolveTypeName = (id: string, names?: NameMaps): string => names?.typeNames.get(id) ?? id;
+
+const resolvePropertyName = (id: string, names?: NameMaps): string => names?.propertyNames.get(id) ?? id;
+
 export const formatEntity = (
-  entity: StoredEntity,
-  store: PrefetchedStore,
-  options?: { includeTimestamp?: boolean | undefined; showSpace?: boolean | undefined; skipEmpty?: boolean | undefined },
+  entity: GeoEntity,
+  options?: {
+    showSpace?: boolean | undefined;
+    spaceName?: string | undefined;
+    spaceId?: string | undefined;
+    skipEmpty?: boolean | undefined;
+    names?: NameMaps | undefined;
+  },
 ): string => {
   const lines: string[] = [];
+  const names = options?.names;
 
   // Header
   lines.push(`### ${entity.name ?? '(unnamed)'}`);
 
-  // Type resolution
-  const typeNames = entity.typeIds.map((tid) => store.resolveTypeName(tid));
+  // Type names
+  const typeNames = entity.typeIds.map((id) => resolveTypeName(id, names));
   lines.push(`**Type:** ${typeNames.length > 0 ? typeNames.join(', ') : '(untyped)'}`);
   lines.push(`**ID:** ${entity.id}`);
-  if (options?.showSpace) {
-    lines.push(`**Space:** ${store.resolveSpaceName(entity.spaceId)}`);
+
+  if (options?.showSpace && options.spaceName) {
+    lines.push(`**Space:** ${options.spaceName}`);
   }
+
+  // Geo URL
+  if (options?.spaceId) {
+    lines.push(`**URL:** ${buildGeoUrl(options.spaceId, entity.id)}`);
+  }
+
   lines.push('');
 
-  // Properties section -- iterate over type schema to show all properties including empty
+  // Properties section
   lines.push('**Properties:**');
 
-  const firstTypeId = entity.typeIds[0];
-  const typeProperties = firstTypeId ? store.getTypeProperties(firstTypeId) : [];
-  const valueMap = new Map(entity.values.map((v) => [v.propertyId, v]));
-  const displayedPropertyIds = new Set<string>();
-
-  for (const typeProp of typeProperties) {
-    displayedPropertyIds.add(typeProp.id);
-    const value = valueMap.get(typeProp.id);
-
-    if (!value) {
-      if (!options?.skipEmpty) lines.push(`- ${typeProp.name}: (empty)`);
-      continue;
-    }
-
-    const extracted = extractPropertyValue(value);
-    if (extracted === null) {
-      if (!options?.skipEmpty) lines.push(`- ${typeProp.name}: (empty)`);
-      continue;
-    }
-
-    lines.push(`- ${typeProp.name}: ${truncateValue(extracted)}`);
+  const values = entity.valuesList;
+  if (values.length === 0 && !options?.skipEmpty) {
+    lines.push('- (none)');
   }
 
-  // Orphaned properties (in entity values but not in type schema)
-  for (const value of entity.values) {
-    if (displayedPropertyIds.has(value.propertyId)) continue;
-
-    const propName = store.resolvePropertyName(value.propertyId);
+  for (const value of values) {
+    const propName = resolvePropertyName(value.propertyId, names);
     const extracted = extractPropertyValue(value);
     if (extracted === null) {
       if (!options?.skipEmpty) lines.push(`- ${propName}: (empty)`);
-    } else {
-      lines.push(`- ${propName}: ${truncateValue(extracted)}`);
+      continue;
     }
+    lines.push(`- ${propName}: ${truncateValue(extracted)}`);
   }
 
   // Relations section
-  if (entity.relations.length > 0) {
+  const relations = entity.relationsList;
+  if (relations.length > 0) {
     lines.push('');
     lines.push('**Relations:**');
-    for (const relation of entity.relations) {
-      const relName = store.resolvePropertyName(relation.typeId);
-      const targetName = relation.toEntityName ?? store.resolveEntityName(relation.toEntityId);
+    for (const relation of relations) {
+      const relName = resolvePropertyName(relation.typeId, names);
+      const targetName = relation.toEntity.name ?? relation.toEntity.id;
       lines.push(`- ${relName}: ${targetName}`);
     }
-  }
-
-  // Timestamp footer (optional, for single-entity display)
-  if (options?.includeTimestamp !== false) {
-    lines.push('');
-    lines.push(`*Data loaded at ${store.getPrefetchTimestamp()}*`);
   }
 
   return lines.join('\n');
 };
 
+export type RelatedEntityInfo = {
+  entity: GeoEntity;
+  relationTypeName: string;
+  direction: 'outgoing' | 'incoming';
+  spaceName?: string;
+  spaceId?: string;
+};
+
 export const formatEntityList = (
-  entities: StoredEntity[],
-  store: PrefetchedStore,
+  entities: GeoEntity[],
   options: {
     spaceName: string;
     typeName?: string;
@@ -112,17 +113,17 @@ export const formatEntityList = (
     sortOrder?: 'asc' | 'desc' | undefined;
     crossSpace?: boolean;
     fallbackNote?: string;
+    spaceResolver?: (entity: GeoEntity) => { name: string; id: string } | undefined;
+    names?: NameMaps | undefined;
   },
 ): string => {
   const lines: string[] = [];
 
-  // Fallback note (rendered as blockquote above the header)
   if (options.fallbackNote) {
     lines.push(`> ${options.fallbackNote}`);
     lines.push('');
   }
 
-  // Header
   if (options.typeName) {
     lines.push(
       options.crossSpace
@@ -135,7 +136,6 @@ export const formatEntityList = (
     );
   }
 
-  // Active filter/sort summary
   if (options.filters?.length) {
     const filterStr = options.filters
       .map((f) => (f.value !== undefined ? `${f.property} ${f.operator} ${f.value}` : `${f.property} ${f.operator}`))
@@ -146,7 +146,6 @@ export const formatEntityList = (
     lines.push(`**Sorted by:** ${options.sortBy} ${options.sortOrder ?? 'asc'}`);
   }
 
-  // Count line
   if (options.limit !== undefined) {
     lines.push(`Showing ${entities.length} of ${options.total} entities`);
   } else {
@@ -155,31 +154,34 @@ export const formatEntityList = (
 
   lines.push('');
 
-  // Each entity without individual timestamp
   for (const entity of entities) {
-    lines.push(formatEntity(entity, store, { includeTimestamp: false, showSpace: options.crossSpace, skipEmpty: true }));
+    const spaceInfo = options.spaceResolver?.(entity);
+    lines.push(
+      formatEntity(entity, {
+        showSpace: options.crossSpace,
+        spaceName: spaceInfo?.name,
+        spaceId: spaceInfo?.id,
+        skipEmpty: true,
+        names: options.names,
+      }),
+    );
     lines.push('');
   }
-
-  // Single footer timestamp
-  lines.push(`*Data loaded at ${store.getPrefetchTimestamp()}*`);
 
   return lines.join('\n');
 };
 
-// Compact table format for entity lists (token-efficient)
 const formatEntityTableRows = (
-  entities: StoredEntity[],
-  store: PrefetchedStore,
+  entities: GeoEntity[],
   showSpace: boolean,
+  spaceResolver?: (entity: GeoEntity) => { name: string; id: string } | undefined,
+  names?: NameMaps,
 ): string => {
   const rows = entities.map((e) => {
     const name = e.name ?? '(unnamed)';
-    const type = e.typeIds.map((id) => store.resolveTypeName(id)).join(', ') || '(untyped)';
-    const space = showSpace ? store.resolveSpaceName(e.spaceId) : null;
-    return space
-      ? `| ${name} | ${type} | ${space} | ${e.id} |`
-      : `| ${name} | ${type} | ${e.id} |`;
+    const type = e.typeIds.map((id) => resolveTypeName(id, names)).join(', ') || '(untyped)';
+    const space = showSpace ? (spaceResolver?.(e)?.name ?? '') : null;
+    return space !== null ? `| ${name} | ${type} | ${space} | ${e.id} |` : `| ${name} | ${type} | ${e.id} |`;
   });
   const header = showSpace
     ? '| Name | Type | Space | ID |\n|------|------|-------|-----|'
@@ -188,8 +190,7 @@ const formatEntityTableRows = (
 };
 
 export const formatEntityListCompact = (
-  entities: StoredEntity[],
-  store: PrefetchedStore,
+  entities: GeoEntity[],
   options: {
     spaceName: string;
     typeName?: string;
@@ -198,6 +199,8 @@ export const formatEntityListCompact = (
     offset?: number;
     crossSpace?: boolean;
     fallbackNote?: string;
+    spaceResolver?: (entity: GeoEntity) => { name: string; id: string } | undefined;
+    names?: NameMaps | undefined;
   },
 ): string => {
   const lines: string[] = [];
@@ -214,7 +217,9 @@ export const formatEntityListCompact = (
         : `## ${options.typeName} entities in ${options.spaceName}`,
     );
   } else {
-    lines.push(options.crossSpace ? '## Search results across all spaces' : `## Search results in ${options.spaceName}`);
+    lines.push(
+      options.crossSpace ? '## Search results across all spaces' : `## Search results in ${options.spaceName}`,
+    );
   }
 
   lines.push(
@@ -223,15 +228,12 @@ export const formatEntityListCompact = (
       : `Found ${options.total} entities`,
   );
   lines.push('');
-  lines.push(formatEntityTableRows(entities, store, !!options.crossSpace));
-  lines.push('');
-  lines.push(`*Data loaded at ${store.getPrefetchTimestamp()}*`);
+  lines.push(formatEntityTableRows(entities, !!options.crossSpace, options.spaceResolver, options.names));
   return lines.join('\n');
 };
 
 export const formatRelatedEntityListCompact = (
-  relatedEntities: RelatedEntity[],
-  store: PrefetchedStore,
+  relatedEntities: RelatedEntityInfo[],
   options: {
     sourceEntityName: string;
     direction: 'outgoing' | 'incoming' | 'both';
@@ -239,6 +241,7 @@ export const formatRelatedEntityListCompact = (
     total: number;
     limit?: number;
     offset?: number;
+    names?: NameMaps | undefined;
   },
 ): string => {
   const lines: string[] = [];
@@ -262,24 +265,21 @@ export const formatRelatedEntityListCompact = (
   );
   lines.push('');
 
-  lines.push('| Name | Type | Space | ID |');
-  lines.push('|------|------|-------|-----|');
+  lines.push('| Name | Type | Relation | Dir | ID |');
+  lines.push('|------|------|----------|-----|-----|');
   for (const related of relatedEntities) {
     const e = related.entity;
     const name = e.name ?? '(unnamed)';
-    const type = e.typeIds.map((id) => store.resolveTypeName(id)).join(', ') || '(untyped)';
-    const space = store.resolveSpaceName(e.spaceId);
-    lines.push(`| ${name} | ${type} | ${space} | ${e.id} |`);
+    const type = e.typeIds.map((id) => resolveTypeName(id, options.names)).join(', ') || '(untyped)';
+    const arrow = related.direction === 'outgoing' ? '->' : '<-';
+    lines.push(`| ${name} | ${type} | ${related.relationTypeName} | ${arrow} | ${e.id} |`);
   }
 
-  lines.push('');
-  lines.push(`*Data loaded at ${store.getPrefetchTimestamp()}*`);
   return lines.join('\n');
 };
 
 export const formatRelatedEntityList = (
-  relatedEntities: RelatedEntity[],
-  store: PrefetchedStore,
+  relatedEntities: RelatedEntityInfo[],
   options: {
     sourceEntityName: string;
     direction: 'outgoing' | 'incoming' | 'both';
@@ -287,11 +287,11 @@ export const formatRelatedEntityList = (
     total: number;
     limit?: number;
     offset?: number;
+    names?: NameMaps | undefined;
   },
 ): string => {
   const lines: string[] = [];
 
-  // Header
   const dirLabel =
     options.direction === 'outgoing'
       ? 'outgoing from'
@@ -304,7 +304,6 @@ export const formatRelatedEntityList = (
     lines.push(`**Relation type filter:** ${options.relationTypeName}`);
   }
 
-  // Count line
   if (options.limit !== undefined) {
     lines.push(`Showing ${relatedEntities.length} of ${options.total} related entities`);
   } else {
@@ -313,17 +312,18 @@ export const formatRelatedEntityList = (
 
   lines.push('');
 
-  // Each entity with relation context
   for (const related of relatedEntities) {
-    const relName = store.resolvePropertyName(related.relationTypeId);
-    const arrow = related.direction === 'outgoing' ? '→' : '←';
-    lines.push(`**${arrow} ${relName}**`);
-    lines.push(formatEntity(related.entity, store, { includeTimestamp: false }));
+    const arrow = related.direction === 'outgoing' ? '->' : '<-';
+    lines.push(`**${arrow} ${related.relationTypeName}**`);
+    lines.push(
+      formatEntity(related.entity, {
+        spaceName: related.spaceName,
+        spaceId: related.spaceId,
+        names: options.names,
+      }),
+    );
     lines.push('');
   }
-
-  // Single footer timestamp
-  lines.push(`*Data loaded at ${store.getPrefetchTimestamp()}*`);
 
   return lines.join('\n');
 };

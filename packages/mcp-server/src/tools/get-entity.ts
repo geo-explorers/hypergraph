@@ -1,9 +1,10 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import type { SpacesConfig } from '../config.js';
 import { formatEntity } from '../formatters/entities.js';
-import type { PrefetchedStore } from '../store.js';
+import { fetchEntity, fetchNameMaps } from '../graphql-client.js';
 
-export const registerGetEntityTool = (server: McpServer, store: PrefetchedStore): void => {
+export const registerGetEntityTool = (server: McpServer, config: SpacesConfig): void => {
   server.registerTool(
     'get_entity',
     {
@@ -20,22 +21,38 @@ export const registerGetEntityTool = (server: McpServer, store: PrefetchedStore)
       },
     },
     async ({ id }) => {
-      const entity = store.getEntity(id);
+      try {
+        const allSpaceIds = config.spaces.map((s) => s.id);
+        const [entity, names] = await Promise.all([
+          fetchEntity(config.endpoint, id),
+          fetchNameMaps(config.endpoint, allSpaceIds),
+        ]);
 
-      if (!entity) {
+        if (!entity) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Entity "${id}" not found. Provide a valid entity ID from search results.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const text = formatEntity(entity, { names });
+        return { content: [{ type: 'text' as const, text }] };
+      } catch (error) {
         return {
           content: [
             {
               type: 'text' as const,
-              text: `Entity "${id}" not found. Provide a valid entity ID from search results.`,
+              text: `Failed to fetch entity "${id}": ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
           isError: true,
         };
       }
-
-      const text = formatEntity(entity, store);
-      return { content: [{ type: 'text' as const, text }] };
     },
   );
 };

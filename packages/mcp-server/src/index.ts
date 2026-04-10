@@ -2,21 +2,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Effect } from 'effect';
 import { loadConfig } from './config.js';
-import { ConfigError, PrefetchError } from './errors.js';
-import { prefetchAll } from './prefetch.js';
+import { ConfigError } from './errors.js';
 import { registerTools } from './register-tools.js';
-import { buildStore } from './store.js';
 
 const startup = Effect.gen(function* () {
   const config = yield* loadConfig();
 
-  yield* Effect.logInfo(`Loading ${config.spaces.length} spaces...`);
-
-  const prefetchedData = yield* prefetchAll(config);
-
-  yield* Effect.logInfo(`Prefetched ${prefetchedData.length} spaces, ready`);
-
-  const store = buildStore(prefetchedData);
+  yield* Effect.logInfo(`Configured with ${config.spaces.length} spaces (dynamic queries, no prefetch)`);
 
   const server = new McpServer(
     {
@@ -35,14 +27,14 @@ const startup = Effect.gen(function* () {
         'Rule: Never pass the `space` parameter unless the user explicitly names a space (e.g., "search only in the AI space"). Do NOT infer a space from the entity type, query topic, or your own knowledge about where entities "probably" live.',
         '',
         'Anti-pattern (WRONG — misses entities in other spaces):',
-        '  list_spaces → get_entity_types(space: "Crypto") → list_entities(space: "Crypto", type: "Bounty")',
+        '  list_spaces -> get_entity_types(space: "Crypto") -> list_entities(space: "Crypto", type: "Bounty")',
         '',
         'Correct pattern (searches all spaces):',
         '  list_entities(type: "Bounty", filters: [{property: "Bounty Budget", operator: "eq", value: "1000"}])',
         '',
         'Recommended workflow:',
         '1. get_entity_types — omit space to see ALL types across ALL spaces at once. This shows you which spaces contain each type.',
-        '2. search_entities or list_entities — omit space to search/list across all spaces. Use type + filters for property-based queries (e.g., find all Bounties with budget = 1000: search_entities(type: "Bounty", filters: [{property: "Bounty Budget", operator: "eq", value: "1000"}])).',
+        '2. search_entities or list_entities — omit space to search/list across all spaces. Use type + filters for property-based queries.',
         '3. get_entity — get full details for a specific entity by ID.',
         '4. get_related_entities — traverse the graph from an entity.',
         '',
@@ -55,12 +47,12 @@ const startup = Effect.gen(function* () {
         'Omit relation_type to discover all relation types first, then refine.',
         '',
         'All name inputs (spaces, types, relation types) support fuzzy matching.',
-        'When no limit is specified, all matching results are returned. Use limit and offset for pagination.',
+        'When no limit is specified, results default to 50. Use limit and offset for pagination.',
       ].join('\n'),
     },
   );
 
-  registerTools(server, store, config);
+  registerTools(server, config);
 
   yield* Effect.logInfo(
     'Registered 6 tools: list_spaces, get_entity_types, search_entities, get_entity, list_entities, get_related_entities',
@@ -78,8 +70,6 @@ const main = startup.pipe(
 
     if (error instanceof ConfigError) {
       message = `Configuration error: ${error.message}`;
-    } else if (error instanceof PrefetchError) {
-      message = `Failed to prefetch space '${error.space}': ${error.cause}`;
     } else {
       message = `Server failed to start: ${String(error)}`;
     }
