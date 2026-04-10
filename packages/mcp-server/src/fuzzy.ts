@@ -1,4 +1,6 @@
-import type { SpaceInfo, TypeInfo } from './store.js';
+import type { SpaceConfig } from './config.js';
+
+export type TypeInfo = { id: string; name: string };
 
 export const normalize = (input: string): string =>
   input
@@ -7,7 +9,7 @@ export const normalize = (input: string): string =>
     .replace(/[^a-z0-9]/g, '')
     .trim();
 
-export const resolveSpace = (input: string, spaces: SpaceInfo[]): SpaceInfo | undefined => {
+export const resolveSpace = (input: string, spaces: SpaceConfig[]): SpaceConfig | undefined => {
   const normalized = normalize(input);
   if (normalized === '') return undefined;
 

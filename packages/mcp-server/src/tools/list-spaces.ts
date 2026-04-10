@@ -1,8 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { SpacesConfig } from '../config.js';
 import { formatSpacesList } from '../formatters/spaces.js';
-import type { PrefetchedStore } from '../store.js';
 
-export const registerListSpacesTool = (server: McpServer, store: PrefetchedStore): void => {
+export const registerListSpacesTool = (server: McpServer, config: SpacesConfig): void => {
   server.registerTool(
     'list_spaces',
     {
@@ -20,7 +20,7 @@ export const registerListSpacesTool = (server: McpServer, store: PrefetchedStore
       const note =
         '> **Note:** Spaces organize the data source, not the topic. An entity named "Geo" may live in the "Crypto" space. Use search_entities without a space parameter to find entities across all spaces.\n' +
         '> **Warning:** Do NOT pick a space from this list to narrow your search — you will miss entities in other spaces. Only pass `space` if the user explicitly asks to restrict to a specific space.\n\n';
-      const text = note + formatSpacesList(store.getSpaces());
+      const text = note + formatSpacesList(config.spaces);
       return { content: [{ type: 'text' as const, text }] };
     },
   );
